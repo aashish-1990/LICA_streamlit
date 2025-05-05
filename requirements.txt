@@ -1,0 +1,6 @@
+streamlit==1.34.0
+streamlit-webrtc==0.45.0
+pydub
+av
+requests
+python-dotenv
