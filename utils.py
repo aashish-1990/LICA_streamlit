@@ -1,44 +1,57 @@
 import requests
-import streamlit as st
 from pydub import AudioSegment
 import tempfile
 import base64
 
-SARVAM_STT = "https://stt.api.sarvam.ai/asr"
-SARVAM_TTT = "https://sarvam.ai/api/translate"
-SARVAM_TTS = "https://tts.api.sarvam.ai/tts"
+# Sarvam AI endpoints
+STT_API = "https://stt.api.sarvam.ai/v1/audio"
+TTT_API = "https://api.sarvam.ai/v1/translate"
+TTS_API = "https://api.sarvam.ai/v1/tts"
+
+# Headers for Sarvam TTT and TTS (STT does not need headers)
+HEADERS = {"accept": "application/json", "Content-Type": "application/json"}
+
+# Role-based language logic
+def detect_language(role):
+    return "hi" if role == "teacher" else "pa"  # Hindi if Teacher, Punjabi if Student
+
+def detect_target_language(role):
+    return "pa" if role == "teacher" else "hi"  # Opposite of source
 
 def transcribe_and_translate(audio_bytes, role):
-    # Convert MP3 to WAV in memory
-    audio = AudioSegment.from_mp3(tempfile.NamedTemporaryFile(delete=False).name)
+    # Save MP3 bytes to temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+        tmp.write(audio_bytes)
+        tmp.flush()
+        tmp_path = tmp.name
+
+    # Convert to WAV
+    audio = AudioSegment.from_mp3(tmp_path)
     audio.export("temp.wav", format="wav")
+
+    # Call Sarvam STT
     files = {'file': open("temp.wav", 'rb')}
+    response = requests.post(STT_API, files=files)
+    original_text = response.json().get("text", "")
 
-    # STT
-    stt_response = requests.post(SARVAM_STT, files=files).json()
-    original_text = stt_response.get("text", "")
-
-    # TTT
-    if role == "teacher":
-        ttt_data = {"text": original_text, "source": "hi", "target": "pa"}
-    else:
-        ttt_data = {"text": original_text, "source": "pa", "target": "hi"}
-    ttt_response = requests.post(SARVAM_TTT, json=ttt_data).json()
-    translated_text = ttt_response.get("translated_text", "")
+    # Call Sarvam TTT
+    payload = {
+        "text": original_text,
+        "source_language": detect_language(role),
+        "target_language": detect_target_language(role)
+    }
+    res = requests.post(TTT_API, json=payload, headers=HEADERS)
+    translated_text = res.json().get("text", "")
 
     return original_text, translated_text
 
 def generate_audio(text, role):
-    lang = "pa" if role == "teacher" else "hi"
-    tts_data = {"text": text, "lang": lang}
-    tts_response = requests.post(SARVAM_TTS, json=tts_data)
-    return tts_response.content if tts_response.status_code == 200 else None
-
-def play_audio(audio_bytes):
-    b64 = base64.b64encode(audio_bytes).decode()
-    audio_tag = f"""
-        <audio autoplay controls>
-        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-    """
-    st.markdown(audio_tag, unsafe_allow_html=True)
+    # Call Sarvam TTS
+    payload = {
+        "text": text,
+        "speaker": "ai2",  # Choose from available voices: ai1, ai2, ...
+        "language": detect_target_language(role)
+    }
+    res = requests.post(TTS_API, json=payload, headers=HEADERS)
+    audio_base64 = res.json().get("audio", "")
+    return base64.b64decode(audio_base64)
