@@ -1,69 +1,35 @@
 import streamlit as st
-from utils import (
-    record_audio,
-    transcribe_audio,
-    translate_text,
-    synthesize_speech,
-    play_audio,
-    set_voice_params
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, ClientSettings
+from utils import process_audio_bytes
+import av
+
+st.set_page_config(page_title="LICA Voice Translator", layout="centered")
+st.title("🎙️ LICA - Bilingual Voice Translator")
+
+role = st.radio("Select your role:", ("Teacher", "Student"))
+
+st.markdown("Speak into the mic. Your translated audio will play below after processing.")
+
+result_placeholder = st.empty()
+
+def audio_frame_callback(frame: av.AudioFrame) -> av.AudioFrame:
+    audio = frame.to_ndarray()
+    sample_rate = frame.sample_rate
+
+    with st.spinner("Processing..."):
+        original_text, translated_text, translated_audio = process_audio_bytes(audio, sample_rate, role)
+
+        result_placeholder.markdown(f"**You said:** {original_text}  \n**Translated:** {translated_text}")
+        st.audio(translated_audio, format="audio/mp3")
+
+    return frame
+
+webrtc_streamer(
+    key="voice",
+    mode=WebRtcMode.SENDONLY,
+    in_audio_frame_callback=audio_frame_callback,
+    client_settings=ClientSettings(
+        media_stream_constraints={"audio": True, "video": False},
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+    ),
 )
-import tempfile
-import os
-
-st.set_page_config(layout="centered", page_title="LICA - Bilingual Voice Translator")
-
-st.title("🗣️ LICA: Bilingual Voice Translator for Classrooms")
-
-# Role Selection
-role = st.radio("Select your role:", ["👩‍🏫 Teacher", "🧑‍🎓 Student"], horizontal=True)
-
-# UI Sections
-if role == "👩‍🏫 Teacher":
-    st.subheader("🎤 Teacher speaks in Hindi → Student hears in Punjabi")
-
-    if st.button("Start Recording (Teacher)"):
-        st.info("Recording Teacher's audio...")
-        teacher_audio = record_audio()
-        st.success("Recording complete!")
-
-        st.audio(teacher_audio, format="audio/mp3", start_time=0)
-
-        with st.spinner("Transcribing (Hindi)..."):
-            teacher_text = transcribe_audio(teacher_audio, source_lang="hi")
-        st.write("✍️ Transcribed Text (Hindi):", teacher_text)
-
-        with st.spinner("Translating to Punjabi..."):
-            translated_text = translate_text(teacher_text, src_lang="hi", tgt_lang="pa")
-        st.write("🌐 Translated Text (Punjabi):", translated_text)
-
-        with st.spinner("Synthesizing Punjabi Speech..."):
-            output_audio = synthesize_speech(translated_text, language="pa")
-        st.success("✅ Translated audio ready!")
-
-        st.audio(output_audio, format="audio/mp3", start_time=0)
-        play_audio(output_audio)
-
-elif role == "🧑‍🎓 Student":
-    st.subheader("🎤 Student speaks in Punjabi → Teacher hears in Hindi")
-
-    if st.button("Start Recording (Student)"):
-        st.info("Recording Student's audio...")
-        student_audio = record_audio()
-        st.success("Recording complete!")
-
-        st.audio(student_audio, format="audio/mp3", start_time=0)
-
-        with st.spinner("Transcribing (Punjabi)..."):
-            student_text = transcribe_audio(student_audio, source_lang="pa")
-        st.write("✍️ Transcribed Text (Punjabi):", student_text)
-
-        with st.spinner("Translating to Hindi..."):
-            translated_text = translate_text(student_text, src_lang="pa", tgt_lang="hi")
-        st.write("🌐 Translated Text (Hindi):", translated_text)
-
-        with st.spinner("Synthesizing Hindi Speech..."):
-            output_audio = synthesize_speech(translated_text, language="hi")
-        st.success("✅ Translated audio ready!")
-
-        st.audio(output_audio, format="audio/mp3", start_time=0)
-        play_audio(output_audio)
