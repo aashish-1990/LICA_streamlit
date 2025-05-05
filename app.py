@@ -1,100 +1,47 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
-import av
-import numpy as np
-import tempfile
-from pydub import AudioSegment
-import base64
-import requests
-import os
-from dotenv import load_dotenv
+from audio_recorder_streamlit import audio_recorder
+from utils import transcribe_and_translate, generate_audio, play_audio
 
-load_dotenv()
+st.set_page_config(page_title="LICA Voice Translator", layout="wide")
 
-# TTT & TTS endpoints
-TTT_API = "https://indictrans2-api.ai4bharat.org/translate"
-TTS_API = "https://model-api.sarvam.ai/tts/inference/"
+st.title("🎙️ LICA: Multilingual Classroom Voice Assistant")
 
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "your_sarvam_api_key_here")  # put your API key in .env
+role = st.radio("Select your role", ["Teacher", "Student"], horizontal=True)
 
-st.set_page_config(page_title="LICA Bilingual Voice Assistant", layout="centered")
-st.title("🎙️ LICA Bilingual Voice Assistant (Hindi ↔ Punjabi)")
-st.markdown("Real-time voice translation with waveform and MP3 playback")
+left_col, right_col = st.columns(2)
 
-role = st.radio("Select Your Role", ["👨‍🏫 Teacher (Hindi)", "👩‍🎓 Student (Punjabi)"])
-source_lang = "hi" if "Teacher" in role else "pa"
-target_lang = "pa" if source_lang == "hi" else "hi"
+# Layout helper
+def render_section(col, label, role_tag):
+    with col:
+        st.markdown(f"### {label} Section")
+        audio_bytes = audio_recorder(
+            text=f"Click to record ({label})",
+            icon_size="2x"
+        )
+        original_text = ""
+        translated_text = ""
+        audio_out = None
 
-class AudioProcessor(AudioProcessorBase):
-    def __init__(self) -> None:
-        self.recorded_frames = []
+        if audio_bytes:
+            with st.spinner("Transcribing..."):
+                original_text, translated_text = transcribe_and_translate(audio_bytes, role_tag)
+            with st.spinner("Generating audio..."):
+                audio_out = generate_audio(translated_text, role_tag)
 
-    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-        pcm = frame.to_ndarray()
-        self.recorded_frames.append(pcm)
-        return frame
+        if original_text:
+            st.markdown("**Original Text:**")
+            st.success(original_text)
+        if translated_text:
+            st.markdown("**Translated Text:**")
+            st.info(translated_text)
+        if audio_out:
+            play_audio(audio_out)
 
-audio_ctx = webrtc_streamer(
-    key="audio",
-    mode=WebRtcMode.SENDRECV,
-    audio_processor_factory=AudioProcessor,
-    media_stream_constraints={"audio": True, "video": False},
-)
-
-if audio_ctx and audio_ctx.audio_processor:
-    if st.button("🛑 Stop & Translate"):
-        audio = np.concatenate(audio_ctx.audio_processor.recorded_frames, axis=1)
-        audio = audio.astype(np.int16).tobytes()
-        tmp_pcm = tempfile.NamedTemporaryFile(suffix=".pcm", delete=False)
-        tmp_pcm.write(audio)
-        tmp_pcm.close()
-
-        tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        sound = AudioSegment.from_file(tmp_pcm.name, format="s16le", frame_rate=48000, channels=1)
-        sound.export(tmp_mp3.name, format="mp3")
-
-        audio_file = tmp_mp3.name
-        with open(audio_file, "rb") as f:
-            mp3_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-        st.audio(audio_file, format="audio/mp3")
-        st.success("✅ Voice captured and converted to MP3")
-
-        # --- Speech-to-Text placeholder ---
-        original_text = "Placeholder input sentence"  # replace with STT output if needed
-
-        # --- Translate ---
-        with st.spinner("Translating..."):
-            ttt_payload = {
-                "input": [{"source": original_text}],
-                "config": {
-                    "model": "ai4bharat/indictrans2-en-indic",
-                    "src_lang": source_lang,
-                    "tgt_lang": target_lang
-                }
-            }
-            ttt_response = requests.post(TTT_API, json=ttt_payload)
-            translated_text = ttt_response.json()["output"][0]["target"]
-
-        st.markdown(f"**Original ({source_lang}):** {original_text}")
-        st.markdown(f"**Translated ({target_lang}):** {translated_text}")
-
-        # --- TTS ---
-        with st.spinner("Generating Speech..."):
-            tts_payload = {
-                "text": translated_text,
-                "language": target_lang,
-                "voice": "saarika:v2",
-                "sampling_rate": 24000
-            }
-            headers = {"Authorization": f"Bearer {SARVAM_API_KEY}"}
-            tts_response = requests.post(TTS_API, json=tts_payload, headers=headers)
-            tts_audio = base64.b64decode(tts_response.json()["audio"])
-
-            tts_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-            tts_file.write(tts_audio)
-            tts_file.close()
-
-        st.audio(tts_file.name, format="audio/mp3")
-        st.success("✅ Translated speech ready!")
-
+# Teacher speaks → show original in Teacher, translated + audio in Student
+# Student speaks → show original in Student, translated + audio in Teacher
+if role == "Teacher":
+    render_section(left_col, "Teacher", "teacher")
+    render_section(right_col, "Student", "student_dummy")  # dummy right card just for layout
+else:
+    render_section(left_col, "Teacher", "teacher_dummy")
+    render_section(right_col, "Student", "student")
