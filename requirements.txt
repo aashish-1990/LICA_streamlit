@@ -1,5 +1,7 @@
 streamlit==1.34.0
-audiorecorder==0.1.0
+streamlit_webrtc
+numpy
 pydub
 requests
 python-dotenv
+av
