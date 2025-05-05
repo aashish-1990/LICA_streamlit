@@ -1,4 +1,6 @@
-streamlit==1.32.2
-pydub
+streamlit
+streamlit-webrtc
+numpy
+soundfile
 requests
-audio-recorder-streamlit
+av
