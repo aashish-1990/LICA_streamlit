@@ -1,47 +1,69 @@
 import streamlit as st
-from audio_recorder_streamlit import audio_recorder
-from utils import transcribe_and_translate, generate_audio, play_audio
+from utils import (
+    record_audio,
+    transcribe_audio,
+    translate_text,
+    synthesize_speech,
+    play_audio,
+    set_voice_params
+)
+import tempfile
+import os
 
-st.set_page_config(page_title="LICA Voice Translator", layout="wide")
+st.set_page_config(layout="centered", page_title="LICA - Bilingual Voice Translator")
 
-st.title("🎙️ LICA: Multilingual Classroom Voice Assistant")
+st.title("🗣️ LICA: Bilingual Voice Translator for Classrooms")
 
-role = st.radio("Select your role", ["Teacher", "Student"], horizontal=True)
+# Role Selection
+role = st.radio("Select your role:", ["👩‍🏫 Teacher", "🧑‍🎓 Student"], horizontal=True)
 
-left_col, right_col = st.columns(2)
+# UI Sections
+if role == "👩‍🏫 Teacher":
+    st.subheader("🎤 Teacher speaks in Hindi → Student hears in Punjabi")
 
-# Layout helper
-def render_section(col, label, role_tag):
-    with col:
-        st.markdown(f"### {label} Section")
-        audio_bytes = audio_recorder(
-            text=f"Click to record ({label})",
-            icon_size="2x"
-        )
-        original_text = ""
-        translated_text = ""
-        audio_out = None
+    if st.button("Start Recording (Teacher)"):
+        st.info("Recording Teacher's audio...")
+        teacher_audio = record_audio()
+        st.success("Recording complete!")
 
-        if audio_bytes:
-            with st.spinner("Transcribing..."):
-                original_text, translated_text = transcribe_and_translate(audio_bytes, role_tag)
-            with st.spinner("Generating audio..."):
-                audio_out = generate_audio(translated_text, role_tag)
+        st.audio(teacher_audio, format="audio/mp3", start_time=0)
 
-        if original_text:
-            st.markdown("**Original Text:**")
-            st.success(original_text)
-        if translated_text:
-            st.markdown("**Translated Text:**")
-            st.info(translated_text)
-        if audio_out:
-            play_audio(audio_out)
+        with st.spinner("Transcribing (Hindi)..."):
+            teacher_text = transcribe_audio(teacher_audio, source_lang="hi")
+        st.write("✍️ Transcribed Text (Hindi):", teacher_text)
 
-# Teacher speaks → show original in Teacher, translated + audio in Student
-# Student speaks → show original in Student, translated + audio in Teacher
-if role == "Teacher":
-    render_section(left_col, "Teacher", "teacher")
-    render_section(right_col, "Student", "student_dummy")  # dummy right card just for layout
-else:
-    render_section(left_col, "Teacher", "teacher_dummy")
-    render_section(right_col, "Student", "student")
+        with st.spinner("Translating to Punjabi..."):
+            translated_text = translate_text(teacher_text, src_lang="hi", tgt_lang="pa")
+        st.write("🌐 Translated Text (Punjabi):", translated_text)
+
+        with st.spinner("Synthesizing Punjabi Speech..."):
+            output_audio = synthesize_speech(translated_text, language="pa")
+        st.success("✅ Translated audio ready!")
+
+        st.audio(output_audio, format="audio/mp3", start_time=0)
+        play_audio(output_audio)
+
+elif role == "🧑‍🎓 Student":
+    st.subheader("🎤 Student speaks in Punjabi → Teacher hears in Hindi")
+
+    if st.button("Start Recording (Student)"):
+        st.info("Recording Student's audio...")
+        student_audio = record_audio()
+        st.success("Recording complete!")
+
+        st.audio(student_audio, format="audio/mp3", start_time=0)
+
+        with st.spinner("Transcribing (Punjabi)..."):
+            student_text = transcribe_audio(student_audio, source_lang="pa")
+        st.write("✍️ Transcribed Text (Punjabi):", student_text)
+
+        with st.spinner("Translating to Hindi..."):
+            translated_text = translate_text(student_text, src_lang="pa", tgt_lang="hi")
+        st.write("🌐 Translated Text (Hindi):", translated_text)
+
+        with st.spinner("Synthesizing Hindi Speech..."):
+            output_audio = synthesize_speech(translated_text, language="hi")
+        st.success("✅ Translated audio ready!")
+
+        st.audio(output_audio, format="audio/mp3", start_time=0)
+        play_audio(output_audio)
