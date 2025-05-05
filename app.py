@@ -1,79 +1,90 @@
 import streamlit as st
-from audiorecorder import audiorecorder
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase
+import numpy as np
+import av
+import tempfile
+from pydub import AudioSegment
 import base64
 import requests
-import io
-from pydub import AudioSegment
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
-# Load API key
 load_dotenv()
-API_KEY = os.getenv("SARVAM_API_KEY")
 
-st.set_page_config(page_title="LICA Teacher Assist", layout="centered")
-st.title("🎙️ LICA Teacher Assist")
+st.set_page_config(page_title="LICA Voice Translator", layout="centered")
 
-role = st.radio("Select your role:", ("Teacher (Hindi)", "Student (Punjabi)"))
+# Sarvam endpoint
+TRANSLATION_API = os.getenv("TRANSLATION_API_URL", "http://localhost:8000/translate_play")
 
-if "Teacher" in role:
-    source_lang, target_lang, speaker = "hi-IN", "pa-IN", "anushka"
-else:
-    source_lang, target_lang, speaker = "pa-IN", "hi-IN", "karun"
+st.title("🗣️ LICA Teacher Assist — Hindi ↔ Punjabi")
 
-st.markdown("Press the button and speak.")
+role = st.radio("🎭 Select Your Role:", ["👨‍🏫 Teacher (Hindi)", "🎓 Student (Punjabi)"])
+selected_role = "teacher" if "Teacher" in role else "student"
 
-# Record audio
-audio = audiorecorder("🔴 Start Recording", "⏹️ Stop Recording")
+status_placeholder = st.empty()
+translated_text = st.empty()
 
-if len(audio) > 0:
-    st.success("Audio recorded!")
+class AudioProcessor(AudioProcessorBase):
+    def __init__(self):
+        self.recorded_frames = []
 
-    # Convert to MP3
-    wav_io = io.BytesIO(audio.tobytes())
-    audio_seg = AudioSegment.from_file(wav_io, format="wav")
-    mp3_io = io.BytesIO()
-    audio_seg.export(mp3_io, format="mp3")
-    mp3_io.seek(0)
+    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+        pcm = frame.to_ndarray()
+        self.recorded_frames.append(pcm)
+        return frame
 
-    # Step 1: STT
-    st.info("Transcribing...")
-    stt = requests.post(
-        "https://api.sarvam.ai/speech-to-text",
-        headers={"API-Subscription-Key": API_KEY},
-        files={"file": ("audio.mp3", mp3_io, "audio/mp3")},
-        data={"model": "saarika:v2", "language_code": "unknown"}
-    ).json()
+audio_ctx = webrtc_streamer(
+    key="audio",
+    mode="SENDRECV",
+    audio_processor_factory=AudioProcessor,
+    media_stream_constraints={"audio": True, "video": False},
+    async_processing=False,
+)
 
-    transcript = stt.get("transcript", "")
-    st.markdown(f"**Original:** {transcript}")
+if audio_ctx.state.playing:
+    status_placeholder.info("🎙️ Recording... Speak now!")
 
-    # Step 2: Translate
-    st.info("Translating...")
-    translation = requests.post(
-        "https://api.sarvam.ai/translate",
-        headers={"API-Subscription-Key": API_KEY, "Content-Type": "application/json"},
-        json={
-            "input": transcript,
-            "source_language_code": source_lang,
-            "target_language_code": target_lang,
-            "mode": "formal"
-        }
-    ).json().get("translated_text", "")
+    if st.button("Stop and Translate"):
+        # Convert frames to np.int16
+        audio_data = np.concatenate(audio_ctx.audio_processor.recorded_frames).astype(np.int16)
 
-    st.markdown(f"**Translated:** {translation}")
+        # Save as .webm then convert to .mp3
+        temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        temp_mp3 = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
 
-    # Step 3: TTS
-    st.info("Generating speech...")
-    tts = requests.post(
-        "https://api.sarvam.ai/text-to-speech",
-        headers={"API-Subscription-Key": API_KEY, "Content-Type": "application/json"},
-        json={
-            "text": translation,
-            "target_language_code": target_lang,
-            "speaker": speaker
-        }
-    ).json()
+        # Save .wav using PyAV
+        with open(temp_wav.name, "wb") as f:
+            wav_audio = AudioSegment(
+                audio_data.tobytes(),
+                frame_rate=48000,
+                sample_width=2,
+                channels=1
+            )
+            wav_audio.export(f, format="wav")
 
-    audio_b64 = tts.get("audios", [""])[0]
-    st.audio(f"data:audio/mp3;base64,{audio_b64}", format="audio/mp3")
+        # Convert to mp3
+        sound = AudioSegment.from_wav(temp_wav.name)
+        sound.export(temp_mp3.name, format="mp3")
+
+        # Send to backend as base64
+        with open(temp_mp3.name, "rb") as f:
+            b64_audio = base64.b64encode(f.read()).decode("utf-8")
+
+        status_placeholder.info("🔄 Translating...")
+        res = requests.post(TRANSLATION_API, json={
+            "audio": f"data:audio/mp3;base64,{b64_audio}",
+            "role": selected_role
+        })
+
+        if res.status_code == 200:
+            data = res.json()
+            original = data.get("original", "N/A")
+            translated = data.get("translated", "N/A")
+            audio_response = data.get("audio", "")
+
+            translated_text.success(f"✅ Original: {original}\n\n🗣️ Translated: {translated}")
+
+            # Auto-play response
+            st.audio(f"data:audio/mp3;base64,{audio_response}", format="audio/mp3")
+        else:
+            st.error("❌ Failed to translate. Try again.")
