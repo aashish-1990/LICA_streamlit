@@ -1,7 +1,7 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, AudioProcessorBase
-import numpy as np
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
+import numpy as np
 import tempfile
 from pydub import AudioSegment
 import base64
@@ -11,21 +11,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-st.set_page_config(page_title="LICA Voice Translator", layout="centered")
+# TTT & TTS endpoints
+TTT_API = "https://indictrans2-api.ai4bharat.org/translate"
+TTS_API = "https://model-api.sarvam.ai/tts/inference/"
 
-# Sarvam endpoint
-TRANSLATION_API = os.getenv("TRANSLATION_API_URL", "http://localhost:8000/translate_play")
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "your_sarvam_api_key_here")  # put your API key in .env
 
-st.title("🗣️ LICA Teacher Assist — Hindi ↔ Punjabi")
+st.set_page_config(page_title="LICA Bilingual Voice Assistant", layout="centered")
+st.title("🎙️ LICA Bilingual Voice Assistant (Hindi ↔ Punjabi)")
+st.markdown("Real-time voice translation with waveform and MP3 playback")
 
-role = st.radio("🎭 Select Your Role:", ["👨‍🏫 Teacher (Hindi)", "🎓 Student (Punjabi)"])
-selected_role = "teacher" if "Teacher" in role else "student"
-
-status_placeholder = st.empty()
-translated_text = st.empty()
+role = st.radio("Select Your Role", ["👨‍🏫 Teacher (Hindi)", "👩‍🎓 Student (Punjabi)"])
+source_lang = "hi" if "Teacher" in role else "pa"
+target_lang = "pa" if source_lang == "hi" else "hi"
 
 class AudioProcessor(AudioProcessorBase):
-    def __init__(self):
+    def __init__(self) -> None:
         self.recorded_frames = []
 
     def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
@@ -35,56 +36,65 @@ class AudioProcessor(AudioProcessorBase):
 
 audio_ctx = webrtc_streamer(
     key="audio",
-    mode="SENDRECV",
+    mode=WebRtcMode.SENDRECV,
     audio_processor_factory=AudioProcessor,
     media_stream_constraints={"audio": True, "video": False},
-    async_processing=False,
 )
 
-if audio_ctx.state.playing:
-    status_placeholder.info("🎙️ Recording... Speak now!")
+if audio_ctx and audio_ctx.audio_processor:
+    if st.button("🛑 Stop & Translate"):
+        audio = np.concatenate(audio_ctx.audio_processor.recorded_frames, axis=1)
+        audio = audio.astype(np.int16).tobytes()
+        tmp_pcm = tempfile.NamedTemporaryFile(suffix=".pcm", delete=False)
+        tmp_pcm.write(audio)
+        tmp_pcm.close()
 
-    if st.button("Stop and Translate"):
-        # Convert frames to np.int16
-        audio_data = np.concatenate(audio_ctx.audio_processor.recorded_frames).astype(np.int16)
+        tmp_mp3 = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        sound = AudioSegment.from_file(tmp_pcm.name, format="s16le", frame_rate=48000, channels=1)
+        sound.export(tmp_mp3.name, format="mp3")
 
-        # Save as .webm then convert to .mp3
-        temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        temp_mp3 = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        audio_file = tmp_mp3.name
+        with open(audio_file, "rb") as f:
+            mp3_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        # Save .wav using PyAV
-        with open(temp_wav.name, "wb") as f:
-            wav_audio = AudioSegment(
-                audio_data.tobytes(),
-                frame_rate=48000,
-                sample_width=2,
-                channels=1
-            )
-            wav_audio.export(f, format="wav")
+        st.audio(audio_file, format="audio/mp3")
+        st.success("✅ Voice captured and converted to MP3")
 
-        # Convert to mp3
-        sound = AudioSegment.from_wav(temp_wav.name)
-        sound.export(temp_mp3.name, format="mp3")
+        # --- Speech-to-Text placeholder ---
+        original_text = "Placeholder input sentence"  # replace with STT output if needed
 
-        # Send to backend as base64
-        with open(temp_mp3.name, "rb") as f:
-            b64_audio = base64.b64encode(f.read()).decode("utf-8")
+        # --- Translate ---
+        with st.spinner("Translating..."):
+            ttt_payload = {
+                "input": [{"source": original_text}],
+                "config": {
+                    "model": "ai4bharat/indictrans2-en-indic",
+                    "src_lang": source_lang,
+                    "tgt_lang": target_lang
+                }
+            }
+            ttt_response = requests.post(TTT_API, json=ttt_payload)
+            translated_text = ttt_response.json()["output"][0]["target"]
 
-        status_placeholder.info("🔄 Translating...")
-        res = requests.post(TRANSLATION_API, json={
-            "audio": f"data:audio/mp3;base64,{b64_audio}",
-            "role": selected_role
-        })
+        st.markdown(f"**Original ({source_lang}):** {original_text}")
+        st.markdown(f"**Translated ({target_lang}):** {translated_text}")
 
-        if res.status_code == 200:
-            data = res.json()
-            original = data.get("original", "N/A")
-            translated = data.get("translated", "N/A")
-            audio_response = data.get("audio", "")
+        # --- TTS ---
+        with st.spinner("Generating Speech..."):
+            tts_payload = {
+                "text": translated_text,
+                "language": target_lang,
+                "voice": "saarika:v2",
+                "sampling_rate": 24000
+            }
+            headers = {"Authorization": f"Bearer {SARVAM_API_KEY}"}
+            tts_response = requests.post(TTS_API, json=tts_payload, headers=headers)
+            tts_audio = base64.b64decode(tts_response.json()["audio"])
 
-            translated_text.success(f"✅ Original: {original}\n\n🗣️ Translated: {translated}")
+            tts_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+            tts_file.write(tts_audio)
+            tts_file.close()
 
-            # Auto-play response
-            st.audio(f"data:audio/mp3;base64,{audio_response}", format="audio/mp3")
-        else:
-            st.error("❌ Failed to translate. Try again.")
+        st.audio(tts_file.name, format="audio/mp3")
+        st.success("✅ Translated speech ready!")
+
